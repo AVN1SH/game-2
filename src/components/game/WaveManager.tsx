@@ -65,7 +65,7 @@ export default function WaveManager() {
     const groundY = (window as any).__groundY ?? 0;
     const entry = {
       id: `z-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      position: [x, 2, z] as [number, number, number],
+      position: [x, 5, z] as [number, number, number],
       type,
       health: cfg.health * (type === "boss" ? 5 : 1),
       speed: cfg.speed * (type === "boss" ? 0.8 : 1),

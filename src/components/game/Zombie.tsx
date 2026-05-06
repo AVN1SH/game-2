@@ -1,12 +1,10 @@
 "use client";
 
 import { useRef, useEffect, useMemo } from "react";
-
 import { useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { RigidBody, CapsuleCollider } from "@react-three/rapier";
-import { Group, AnimationMixer, AnimationClip, Vector3, MathUtils } from "three";
-import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
+import { AnimationClip, AnimationMixer, Group, LoopOnce, MathUtils, Vector3 } from "three";
+import { SkeletonUtils } from "three-stdlib";
 import { useGameStore } from "@/lib/useGameStore";
 
 export type ZombieType = "walk" | "run" | "crawl" | "boss";
@@ -21,62 +19,90 @@ interface ZombieProps {
 }
 
 type AIState = "chase" | "attack" | "death";
-const ATTACK_RANGE = 2.2;
-const DMG = 10;
-const ATK_INTERVAL = 1400;
-const GROUND_Y = 0; // road surface
 
-function findClip(clips: AnimationClip[], keys: string[]) {
+const ATTACK_RANGE = 2.5;
+const DMG          = 10;
+const ATK_INTERVAL = 1500; // ms
+const GROUND_Y     = 0;
+
+// Find best matching clip from a list of keyword priorities
+function findClip(clips: AnimationClip[], keys: string[]): AnimationClip | null {
   for (const k of keys) {
-    const c = clips.find(cl => cl.name.toLowerCase().includes(k.toLowerCase()));
-    if (c) return c;
+    const found = clips.find(c => c.name.toLowerCase().includes(k));
+    if (found) return found;
   }
   return clips[0] ?? null;
 }
 
-export default function Zombie({ id, position, type, health: initHp, speed, onDeath }: ZombieProps) {
-  const { scene: src, animations } = useGLTF("/assets/zombie.glb");
-  const bodyRef   = useRef<any>(null);
-  const groupRef  = useRef<Group>(null);
-  const aiState   = useRef<AIState | null>(null);
-  const curAction = useRef<any>(null);
-  const hp        = useRef(initHp);
-  const dead      = useRef(false);
-  const deadTimer = useRef(0);
-  const lastHit   = useRef(0);
+export default function Zombie({
+  id,
+  position,
+  type,
+  health: initHp,
+  speed,
+  onDeath,
+}: ZombieProps) {
+  // ── GLTF (shared across all instances via Suspense cache) ─────────
+  const { scene: srcScene, animations } = useGLTF("/assets/zombie.glb");
 
-  const addScore     = useGameStore((s) => s.addScore);
-  const addKill      = useGameStore((s) => s.addKill);
-  const zombieKilled = useGameStore((s) => s.zombieKilled);
-  const takeDmg      = useGameStore((s) => s.takeDamage);
+  // ── Per-instance deep clone (SkeletonUtils keeps skeleton intact) ─
+  const cloned = useMemo(() => {
+    const c = SkeletonUtils.clone(srcScene);
+    c.traverse((n: any) => {
+      if (n.isMesh) {
+        n.castShadow = true;
+        n.userData.isZombie = true;
+      }
+    });
+    return c;
+  }, [srcScene]);
+
+  // ── AnimationMixer tied to THIS clone ────────────────────────────
+  const mixer = useMemo(() => new AnimationMixer(cloned), [cloned]);
+
+  // ── Refs ─────────────────────────────────────────────────────────
+  const groupRef   = useRef<Group>(null);
+  const aiState    = useRef<AIState>("chase");
+  const curAction  = useRef<any>(null);
+  const hpRef      = useRef(initHp);
+  const deadRef    = useRef(false);
+  const deadTimer  = useRef(0);
+  const lastHit    = useRef(0);
+  const posXZ      = useRef({ x: position[0], z: position[2] });
+
+  // ── Store ─────────────────────────────────────────────────────────
+  const addScore     = useGameStore(s => s.addScore);
+  const addKill      = useGameStore(s => s.addKill);
+  const zombieKilled = useGameStore(s => s.zombieKilled);
+  const takeDmg      = useGameStore(s => s.takeDamage);
   const { camera }   = useThree();
 
-  const cloned = useMemo(() => SkeletonUtils.clone(src), [src]);
-  const mixer  = useMemo(() => new AnimationMixer(cloned), [cloned]);
-
-  // Tag meshes for raycasting when cloned object loads
+  // ── Tag meshes for raycasting ─────────────────────────────────────
   useEffect(() => {
     cloned.traverse((n: any) => {
       if (n.isMesh) {
-        n.castShadow = true;
-        n.userData.isZombie   = true;
         n.userData.takeDamage = (d: number) => applyDmg(d);
       }
     });
   }, [cloned]);
 
-  // Start walk animation initially
+  // ── Play first animation ─────────────────────────────────────────
   useEffect(() => {
     if (!animations.length) return;
-    playAnim("chase");
+    const clip = getClip("chase");
+    if (clip) {
+      const action = mixer.clipAction(clip);
+      action.reset().play();
+      curAction.current = action;
+    }
     return () => mixer.stopAllAction();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mixer, animations]);
+  }, [mixer, animations]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function pickClip(state: AIState) {
-    if (state === "death")  return findClip(animations, ["death", "dying"]);
-    if (state === "attack") return findClip(animations, ["attack", "biting", "bite", "neck"]);
-    if (type === "run" || type === "boss") {
+  // ── Helper: pick best clip for state ─────────────────────────────
+  function getClip(state: AIState): AnimationClip | null {
+    if (state === "death")  return findClip(animations, ["death", "dying", "die"]);
+    if (state === "attack") return findClip(animations, ["attack", "bite", "biting"]);
+    if (type === "run"  || type === "boss") {
       const r = findClip(animations, ["run"]);
       if (r) return r;
     }
@@ -84,35 +110,38 @@ export default function Zombie({ id, position, type, health: initHp, speed, onDe
       const c = findClip(animations, ["crawl"]);
       if (c) return c;
     }
-    return findClip(animations, ["walk", "idle"]);
+    return findClip(animations, ["walk", "zombie_walk", "idle"]);
   }
 
+  // ── Transition animations ─────────────────────────────────────────
   function playAnim(state: AIState) {
     if (aiState.current === state) return;
-    const clip = pickClip(state);
-    if (!clip) return;
+    const clip = getClip(state);
+    if (!clip) { aiState.current = state; return; }
+
     const next = mixer.clipAction(clip);
-    
-    curAction.current?.fadeOut(0.25);
+    curAction.current?.fadeOut(0.2);
+
     if (state === "death") {
-      next.reset().setLoop(2200, 1).fadeIn(0.25).play(); // LoopOnce is 2200
+      next.reset().setLoop(LoopOnce, 1).fadeIn(0.2).play();
       next.clampWhenFinished = true;
     } else {
-      next.reset().fadeIn(0.25).play();
+      next.reset().fadeIn(0.2).play();
     }
     curAction.current = next;
     aiState.current = state;
   }
 
+  // ── Damage ────────────────────────────────────────────────────────
   function applyDmg(d: number) {
-    if (dead.current) return;
-    hp.current -= d;
-    if (hp.current <= 0) die();
+    if (deadRef.current) return;
+    hpRef.current -= d;
+    if (hpRef.current <= 0) die();
   }
 
   function die() {
-    if (dead.current) return;
-    dead.current = true;
+    if (deadRef.current) return;
+    deadRef.current = true;
     playAnim("death");
     addScore(type === "boss" ? 500 : 100);
     addKill(type);
@@ -120,47 +149,49 @@ export default function Zombie({ id, position, type, health: initHp, speed, onDe
     deadTimer.current = 3.5;
   }
 
-  const dir = new Vector3();
+  // ── Per-frame AI + animation update ──────────────────────────────
+  const _dir = useRef(new Vector3());
 
   useFrame((_, delta) => {
-    if (!groupRef.current || !bodyRef.current) return;
+    if (!groupRef.current) return;
+
+    // Always tick animations
     mixer.update(delta);
 
-    const pos = bodyRef.current.translation();
-    
-    // Lock visual mesh to physics body (capsule foot offset)
-    groupRef.current.position.set(pos.x, pos.y - 0.85, pos.z);
+    // Lock to ground
+    groupRef.current.position.y = GROUND_Y;
 
-    if (dead.current) {
+    if (deadRef.current) {
       deadTimer.current -= delta;
       if (deadTimer.current <= 0) onDeath(id);
       return;
     }
 
-    // Chase player in X,Z only 
-    dir.set(
-      camera.position.x - pos.x,
-      0,
-      camera.position.z - pos.z
-    );
-    const dist = dir.length();
+    // Direction to player (XZ only)
+    const dx = camera.position.x - posXZ.current.x;
+    const dz = camera.position.z - posXZ.current.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
 
     if (dist > ATTACK_RANGE) {
-      if (aiState.current !== "chase") playAnim("chase");
-      dir.normalize();
-      const spd = speed * (type === "run" || type === "boss" ? 1.35 : 1);
-      
-      const vel = bodyRef.current.linvel();
-      bodyRef.current.setLinvel({ x: dir.x * spd, y: vel.y, z: dir.z * spd }, true);
+      playAnim("chase");
 
+      const spd = speed * (type === "run" || type === "boss" ? 1.4 : 1.0) * delta;
+      const inv = spd / dist; // normalise inline
+      posXZ.current.x += dx * inv;
+      posXZ.current.z += dz * inv;
+
+      groupRef.current.position.x = posXZ.current.x;
+      groupRef.current.position.z = posXZ.current.z;
+
+      // Face direction of travel
       groupRef.current.rotation.y = MathUtils.lerp(
-        groupRef.current.rotation.y, Math.atan2(dir.x, dir.z), 0.12
+        groupRef.current.rotation.y,
+        Math.atan2(dx, dz),
+        0.15,
       );
     } else {
-      if (aiState.current !== "attack") playAnim("attack");
-      
-      bodyRef.current.setLinvel({ x: 0, y: bodyRef.current.linvel().y, z: 0 }, true);
-      
+      playAnim("attack");
+
       const now = performance.now();
       if (now - lastHit.current > ATK_INTERVAL) {
         lastHit.current = now;
@@ -172,23 +203,12 @@ export default function Zombie({ id, position, type, health: initHp, speed, onDe
   const scale = type === "boss" ? 1.5 : type === "crawl" ? 0.7 : 1.0;
 
   return (
-    <>
-      <RigidBody
-        ref={bodyRef}
-        colliders={false}
-        type="dynamic"
-        position={position}
-        enabledRotations={[false, false, false]}
-        linearDamping={3}
-        mass={70}
-      >
-        <CapsuleCollider args={[0.5, 0.35]} />
-      </RigidBody>
-
-      <group ref={groupRef} position={[position[0], position[1] - 0.85, position[2]]}>
-        <primitive object={cloned} scale={scale} />
-      </group>
-    </>
+    <group
+      ref={groupRef}
+      position={[position[0], GROUND_Y, position[2]]}
+    >
+      <primitive object={cloned} scale={[scale, scale, scale]} />
+    </group>
   );
 }
 
