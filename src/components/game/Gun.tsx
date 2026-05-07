@@ -40,7 +40,7 @@ export default function Gun() {
 
   useEffect(() => {
     // Position in camera-local space (right, down, forward)
-    gunGroup.position.set(0.26, -0.20, -0.45);
+    gunGroup.position.set(0.16, -0.20, -0.45);
     gunGroup.rotation.set(0.05, Math.PI, 0);
 
     camera.add(gunGroup);
@@ -53,7 +53,7 @@ export default function Gun() {
   useFrame(() => {
     const t = performance.now() * 0.001;
     gunGroup.position.y = -0.20 + Math.sin(t * 1.5) * 0.004;
-    gunGroup.position.x =  0.26 + Math.sin(t * 0.9) * 0.003;
+    gunGroup.position.x = 0.26 + Math.sin(t * 0.9) * 0.003;
   });
 
   // No JSX — this component manages the group imperatively

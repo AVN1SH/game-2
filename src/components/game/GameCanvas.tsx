@@ -5,7 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import { Stats } from "@react-three/drei";
 import { Physics } from "@react-three/rapier";
 import { useGameStore } from "@/lib/useGameStore";
-import Player from "./Player"; 
+import Player from "./Player";
 import CityMap from "./CityMap";
 import ZombieManager from "./ZombieManager";
 import WaveManager from "./WaveManager";
@@ -19,13 +19,14 @@ export default function GameCanvas() {
   return (
     <Canvas
       shadows
-      camera={{ fov: 75, near: 0.1, far: 800, position: [73, 5, 65] }}
+      camera={{ fov: 75, near: 0.05, far: 500, position: [18.0, 2.23, 0.0] }}
       gl={{ antialias: true, powerPreference: "high-performance" }}
       onCreated={({ gl }) => gl.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))}
       style={{ width: "100%", height: "100%" }}
       onClick={() => phase === "playing" && document.body.requestPointerLock?.()}
     >
-      <color attach="background" args={["#ff7043"]} />
+      {/* Must exactly match fog color in Lighting.tsx to avoid seam at fog edge */}
+      <color attach="background" args={["#1a1f14"]} />
 
       <Suspense fallback={null}>
         <Lighting />

@@ -6,17 +6,22 @@ import { RigidBody, CapsuleCollider } from "@react-three/rapier";
 import * as THREE from "three";
 import { useGameStore } from "@/lib/useGameStore";
 
-// ── City centre: X=73, Z=65 ────────
-const SPAWN = { x: 73, y: 5, z: 65 } as const;
-const EYE   = 0.75;   // camera above capsule centre
+// ── Real measured values (CITY_SCALE=10, CityMap raycast):
+//    city centre = (12.15, -4.40)
+//    road surface Y = -0.52  →  spawn Y = 1.48 (2 units above road)
+//    Offsetting X and Z slightly to avoid spawning inside the center fountain/building
+const SPAWN = { x: 50, y: 3, z: -10 } as const;
+// If the player falls below this Y, snap them back — covers HMR physics reset edge cases
+const FLOOR_KILL_Y = -30;
+const EYE = 0.75;   // camera height above capsule centre
 
-// ── Boundary (keep player inside city) ────────────────────────────
-const B = { minX: -5, maxX: 150, minZ: -60, maxZ: 190 } as const;
+// ── Boundary: city walls footprint X[-22,46] Z[-38,29] ──────────────
+const B = { minX: -22, maxX: 46, minZ: -38, maxZ: 29 } as const;
 
-const SPEED_KB  = 7;    // keyboard walk
-const SPEED_SPR = 12;   // keyboard sprint
-const SPEED_JOY = 3;    // joystick (slower for thumb control)
-const SHOT_DMG  = 34;
+const SPEED_KB = 3;    // keyboard walk
+const SPEED_SPR = 7;   // keyboard sprint
+const SPEED_JOY = 3;    // joystick
+const SHOT_DMG = 34;
 const RELOAD_MS = 2200;
 
 const keys: Record<string, boolean> = {};
@@ -25,14 +30,14 @@ export default function Player() {
   const bodyRef = useRef<any>(null);
   const { camera, scene } = useThree();
 
-  const phase        = useGameStore((s) => s.phase);
-  const shoot        = useGameStore((s) => s.shoot);
-  const reload       = useGameStore((s) => s.reload);
+  const phase = useGameStore((s) => s.phase);
+  const shoot = useGameStore((s) => s.shoot);
+  const reload = useGameStore((s) => s.reload);
   const finishReload = useGameStore((s) => s.finishReload);
 
-  const yaw      = useRef(0);
-  const pitch    = useRef(0);
-  const locked   = useRef(false);
+  const yaw = useRef(0);
+  const pitch = useRef(0);
+  const locked = useRef(false);
   const joystick = useRef({ x: 0, y: 0 });
   const reloadTm = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -44,9 +49,9 @@ export default function Player() {
     const onLC = () => { locked.current = !!document.pointerLockElement; };
     const onMM = (e: MouseEvent) => {
       if (!locked.current) return;
-      yaw.current   -= e.movementX * 0.002;
+      yaw.current -= e.movementX * 0.002;
       pitch.current -= e.movementY * 0.002;
-      pitch.current  = THREE.MathUtils.clamp(pitch.current, -1.1, 1.1);
+      pitch.current = THREE.MathUtils.clamp(pitch.current, -1.1, 1.1);
     };
     document.addEventListener("pointerlockchange", onLC);
     document.addEventListener("mousemove", onMM);
@@ -63,7 +68,7 @@ export default function Player() {
     window.addEventListener("keydown", dn);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", dn); window.removeEventListener("keyup", up); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Mouse shoot
@@ -74,12 +79,59 @@ export default function Player() {
     };
     window.addEventListener("mousedown", fn);
     return () => window.removeEventListener("mousedown", fn);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   // Mobile joystick bridge
   useEffect(() => {
     (window as any).__setJoystickDir = (x: number, y: number) => { joystick.current = { x, y }; };
+  }, []);
+
+  // ── Snap to road surface reported by CityMap ──────────────────────────
+  useEffect(() => {
+    // Clear any stale globals from a previous HMR cycle so we don't snap
+    // against an old roadY while the new physics world is still initialising.
+    delete (window as any).__cityRoadY;
+    delete (window as any).__cityCX;
+    delete (window as any).__cityCZ;
+
+    let cancelled = false;
+    const trySnap = (attempts = 0) => {
+      if (cancelled) return;
+      const cx    = (window as any).__cityCX    as number | undefined;
+      const cz    = (window as any).__cityCZ    as number | undefined;
+      const roadY = (window as any).__cityRoadY as number | undefined;
+
+      // Wait until BOTH the CityMap globals AND the RigidBody are ready
+      if (cx != null && cz != null && roadY != null && bodyRef.current) {
+        // roadY is the actual cobblestone road surface (from CityMap raycast)
+        // Spawn 2 units above it so the capsule collider lands cleanly
+        const spawnY = roadY + 2.0;
+        bodyRef.current.setTranslation({ x: SPAWN.x, y: spawnY, z: SPAWN.z }, true);
+        bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        console.log(`[Player] spawned at (${SPAWN.x.toFixed(1)}, ${spawnY.toFixed(1)}, ${SPAWN.z.toFixed(1)})  roadY=${roadY.toFixed(2)}`);
+      } else if (attempts < 60) {
+        // Retry every 300 ms for up to 18 s — long enough for slow HMR reloads
+        setTimeout(() => trySnap(attempts + 1), 300);
+      } else {
+        // Last-resort fallback: use the hardcoded SPAWN position
+        if (bodyRef.current) {
+          bodyRef.current.setTranslation({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z }, true);
+          bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          console.warn("[Player] snap timed out — using fallback SPAWN position");
+        }
+      }
+    };
+
+    // Give the physics world and CityMap a moment to initialise on first render
+    // and after every HMR cycle before we start polling.
+    const id = setTimeout(() => trySnap(), 800);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function triggerReload() {
@@ -103,8 +155,21 @@ export default function Player() {
   useFrame((_, delta) => {
     if (phase !== "playing" || !bodyRef.current) return;
 
+    // ── Safety floor: if the player falls through the world (e.g. during an
+    //    HMR cycle where colliders reinitialise mid-frame) snap them back.
+    const curPos = bodyRef.current.translation();
+    if (curPos.y < FLOOR_KILL_Y) {
+      const roadY = (window as any).__cityRoadY as number | undefined;
+      const snapY = roadY != null ? roadY + 2.0 : SPAWN.y;
+      bodyRef.current.setTranslation({ x: SPAWN.x, y: snapY, z: SPAWN.z }, true);
+      bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      console.warn("[Player] fell through floor — re-snapping to spawn");
+      return;
+    }
+
     camera.rotation.y = yaw.current;
     camera.rotation.x = pitch.current;
+    camera.rotation.z = 0; // Force upright so you never look sideways
 
     const sinY = Math.sin(yaw.current);
     const cosY = Math.cos(yaw.current);
@@ -117,10 +182,10 @@ export default function Player() {
       dz = joystick.current.y;
       spd = SPEED_JOY;
     } else {
-      if (keys["KeyW"] || keys["ArrowUp"])    dz =  1;
-      if (keys["KeyS"] || keys["ArrowDown"])  dz = -1;
-      if (keys["KeyA"] || keys["ArrowLeft"])  dx = -1;
-      if (keys["KeyD"] || keys["ArrowRight"]) dx =  1;
+      if (keys["KeyW"] || keys["ArrowUp"]) dz = 1;
+      if (keys["KeyS"] || keys["ArrowDown"]) dz = -1;
+      if (keys["KeyA"] || keys["ArrowLeft"]) dx = -1;
+      if (keys["KeyD"] || keys["ArrowRight"]) dx = 1;
       if (keys["ShiftLeft"] || keys["ShiftRight"]) spd = SPEED_SPR;
     }
 

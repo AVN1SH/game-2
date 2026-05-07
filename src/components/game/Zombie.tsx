@@ -21,9 +21,9 @@ interface ZombieProps {
 type AIState = "chase" | "attack" | "death";
 
 const ATTACK_RANGE = 2.5;
-const DMG          = 10;
+const DMG = 10;
 const ATK_INTERVAL = 1500; // ms
-const GROUND_Y     = 0;
+const GROUND_Y = 0;
 
 // Find best matching clip from a list of keyword priorities
 function findClip(clips: AnimationClip[], keys: string[]): AnimationClip | null {
@@ -61,21 +61,21 @@ export default function Zombie({
   const mixer = useMemo(() => new AnimationMixer(cloned), [cloned]);
 
   // ── Refs ─────────────────────────────────────────────────────────
-  const groupRef   = useRef<Group>(null);
-  const aiState    = useRef<AIState>("chase");
-  const curAction  = useRef<any>(null);
-  const hpRef      = useRef(initHp);
-  const deadRef    = useRef(false);
-  const deadTimer  = useRef(0);
-  const lastHit    = useRef(0);
-  const posXZ      = useRef({ x: position[0], z: position[2] });
+  const groupRef = useRef<Group>(null);
+  const aiState = useRef<AIState>("chase");
+  const curAction = useRef<any>(null);
+  const hpRef = useRef(initHp);
+  const deadRef = useRef(false);
+  const deadTimer = useRef(0);
+  const lastHit = useRef(0);
+  const posXZ = useRef({ x: position[0], z: position[2] });
 
   // ── Store ─────────────────────────────────────────────────────────
-  const addScore     = useGameStore(s => s.addScore);
-  const addKill      = useGameStore(s => s.addKill);
+  const addScore = useGameStore(s => s.addScore);
+  const addKill = useGameStore(s => s.addKill);
   const zombieKilled = useGameStore(s => s.zombieKilled);
-  const takeDmg      = useGameStore(s => s.takeDamage);
-  const { camera }   = useThree();
+  const takeDmg = useGameStore(s => s.takeDamage);
+  const { camera } = useThree();
 
   // ── Tag meshes for raycasting ─────────────────────────────────────
   useEffect(() => {
@@ -100,9 +100,9 @@ export default function Zombie({
 
   // ── Helper: pick best clip for state ─────────────────────────────
   function getClip(state: AIState): AnimationClip | null {
-    if (state === "death")  return findClip(animations, ["death", "dying", "die"]);
+    if (state === "death") return findClip(animations, ["death", "dying", "die"]);
     if (state === "attack") return findClip(animations, ["attack", "bite", "biting"]);
-    if (type === "run"  || type === "boss") {
+    if (type === "run" || type === "boss") {
       const r = findClip(animations, ["run"]);
       if (r) return r;
     }
